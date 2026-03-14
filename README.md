@@ -14,7 +14,6 @@ weather-app/
   └── README.md                  # Project documentation
 ```
 
-
 🌿 Git Flow Branching Strategy on GitHub (Long-lived branches)
 
 🎯 Goals of this model:
