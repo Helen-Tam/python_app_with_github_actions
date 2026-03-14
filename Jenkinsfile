@@ -159,6 +159,9 @@ spec:
                         echo "Scanning Built Image for OS Vulnerabilities..."
                         trivy image --input /home/jenkins/agent/app-image.tar --exit-code 1 --severity CRITICAL $DOCKER_IMAGE
                     '''🔍
+Thursday	7 am–7 pm
+Friday	7 am–3 pm
+Saturday	Close
                 }
             }
         }
