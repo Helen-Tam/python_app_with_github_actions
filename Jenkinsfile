@@ -1,62 +1,8 @@
 pipeline {
     agent {
         kubernetes {
+            yamlFile 'jenkins-agent-pod.yaml'
             label 'jenkins-agent'
-            yaml '''
-apiVersion: v1
-kind: Pod
-metadata:
-  namespace: jenkins
-  labels:
-    app: jenkins-agent
-spec:
-  serviceAccountName: jenkins-agent
-  containers:
-  - name: jnlp
-    image: jenkins/inbound-agent
-    args: ['$(JENKINS_SECRET)', '$(JENKINS_NAME)']
-    volumeMounts:
-      - name: workspace-volume
-        mountPath: /home/jenkins/agent
-
-  - name: python-tools
-    image: python:3.11-slim
-    command: ["cat"]
-    tty: true
-    volumeMounts:
-      - name: workspace-volume
-        mountPath: /home/jenkins/agent
-
-  - name: kaniko
-    image: helentam93/jenkins-agents:kaniko-trivy-cosign    
-    command: ["cat"]
-    tty: true
-    volumeMounts:
-      - name: workspace-volume
-        mountPath: /home/jenkins/agent
-      - name: kaniko-secret
-        mountPath: /kaniko/.docker
-      - name: cosign-key
-        mountPath: /kaniko/.cosign
-
-  - name: git-ops
-    image: alpine/k8s:1.32.12 # Includes kubectl, yq, and git
-    command: ["cat"]
-    tty: true
-    volumeMounts:
-      - name: workspace-volume
-        mountPath: /home/jenkins/agent
-
-  volumes:
-  - name: workspace-volume
-    emptyDir: {}
-  - name: kaniko-secret
-    secret:
-      secretName: dockerhub-creds
-  - name: cosign-key
-    secret:
-      secretName: cosign-key
-'''
         }
     }
 
@@ -66,8 +12,9 @@ spec:
         GIT_CREDENTIALS = 'git-creds'
 
         DOCKER_REPO = "helentam93/weather"
-        IMAGE_TAG   = "${env.BRANCH_NAME}-${env.BUILD_NUMBER}"
-        DOCKER_IMAGE = "${DOCKER_REPO}:${IMAGE_TAG}"
+        DOCKER_TEST_REPO = "helentam93/weather-test"
+        IMAGE_TAG = "${env.BRANCH_NAME.replaceAll('/', '-')}-${env.BUILD_NUMBER}"  
+        NAMESPACE = "jenkins"
     }
 
     stages {
@@ -81,14 +28,10 @@ spec:
             }
         }
 
-
         stage('Security & Linting') {
             parallel {
-
                 stage('Static Code Analysis') {
-                    when { 
-                        anyOf { branch 'feature/*'; branch 'develop'; branch 'hotfix/*' } 
-                    }
+                    when { anyOf { branch 'feature/*'; branch 'develop'; branch 'hotfix/*' } }
                     steps {
                         container('python-tools') {
                             sh '''
@@ -100,17 +43,14 @@ spec:
                                 SCORE=$(pylint app.py | awk '/rated at/ {print $7}' | cut -d'/' -f1)
 
                                 echo "Pylint score: $SCORE"
-                                (( $(echo "$SCORE < 7.0" | bc -l) )) && exit 1 || echo "Score OK"
+                                python3 -c "import sys; sys.exit(1 if float('$SCORE') < 7.0 else 0)" 
                             '''
-                        kubectl delete pod test-pod --namespace=jenkins-agent
                         }
                     }
                 }
 
                 stage('Secret Scan (TruffleHog)') {
-                    when { 
-                        not { branch 'main' } 
-                    }
+                    when { not { branch 'main' } }
                     steps {
                         container('python-tools') {
                             sh '''
@@ -120,7 +60,7 @@ spec:
                                 pip install truffleHog
 
                                 echo "Running secret scan..."
-                                trufflehog discover --repo_path . --json --max_depth 10
+                                trufflehog discover --repo_path . --json --max_depth 10 --fail
                             '''
                         }
                     }
@@ -129,14 +69,11 @@ spec:
         }
 
         stage('Pre-Build Dependency Scan (Trivy)') {
-            when {
-                not { branch 'main' }
-            }
             steps {
                 container('kaniko') {
                     sh '''
                         echo "Running the dependency file-system scan..."
-                        trivy fs --exit-code 1 --severity CRITICAL requirements.txt
+                        trivy fs --exit-code 1 --severity CRITICAL .
 
                         echo "Scanning Dockerfile ..."
                         trivy config --exit-code 1 --severity CRITICAL Dockerfile
@@ -145,74 +82,78 @@ spec:
             }
         }
 
-        stage('Build and Test Docker Image (Export the image as archive, do not push it yet)') {
+        stage('Build, Scan & Push Docker Image') {
             steps {
                 container('kaniko') {
                     sh '''
-                        echo "Building Docker image with Kaniko..."
-                        /kaniko/executor \
-                        kubectl delete pod test-pod --namespace=jenkins-agent
-                          --dockerfile=Dockerfile \
-                          --context=$WORKSPACE \
-                          --tarPath=/home/jenkins/agent/app-image.tar
-
-                        echo "Scanning Built Image for OS Vulnerabilities..."
-                        trivy image --input /home/jenkins/agent/app-image.tar --exit-code 1 --severity CRITICAL $DOCKER_IMAGE
-                    '''🔍
-Thursday	7 am–7 pm
-Friday	7 am–3 pm
-Saturday	Close
-                }
-            }
-        }
-
-        stage('Smoke test') {
-            steps {
-                container('git-ops') {
-                    sh '''
-                        echo "Creating test Pod..."
-                        kubectl run test-pod --image=$DOCKER_IMAGE --restart=Never --namespace=jenkins-agents
-                        kubectl wait --for=condition=Ready pod/test-pod --timeout=30s --namespace=jenkins-agents
-
-                        echo "Testing application reachability..."
-                        if kubectl exec -n jenkins-agents test-pod -- curl -f http://localhost:8000; then
-                            echo "Reachability test PASSED"
-                        else🔍
-                             echo "Reachability test FAILED"
-                             kubectl logs test-pod --namespace=jenkins-agents || true
-                             exit 1
+                        # Determine repo based on branch
+                        if [[ "$BRANCH_NAME" == "develop" || "$BRANCH_NAME" == feature/* ]]; then
+                            IMAGE_REPO="${DOCKER_TEST_REPO}"
+                        else
+                            IMAGE_REPO="${DOCKER_REPO}"
                         fi
 
-                        echo "Removing the test Pod..."
-                        kubectl delete pod test-pod --namespace=jenkins-agents
+                        FULL_IMAGE="${IMAGE_REPO}:${IMAGE_TAG}"
+
+                        echo "Building Docker image: $FULL_IMAGE"
+                        /kaniko/executor \
+                          --dockerfile=Dockerfile \
+                          --context=$WORKSPACE \
+                          --destination=$FULL_IMAGE \
+                          --docker-config=/kaniko/.docker \
+                          --digest-file=/home/jenkins/agent/image-digest.txt
+
+                        echo "Running Trivy scan on pushed image..."
+                        trivy image $FULL_IMAGE --exit-code 1 --severity CRITICAL
                     '''
                 }
             }
         }
 
-        stage('Push and Sign the Docker Image') {
+
+        stage('Smoke Test') {
+            steps {
+                container('git-ops') {
+                    sh '''
+                        if [[ "$BRANCH_NAME" == "develop" || "$BRANCH_NAME" == feature/* ]]; then
+                            TEST_IMAGE="${DOCKER_TEST_REPO}:${IMAGE_TAG}"
+                        else
+                            TEST_IMAGE="${DOCKER_REPO}:${IMAGE_TAG}"
+                        fi
+                        # in case there are still some Pods running from previous pipeline
+                        kubectl delete pod test-pod --namespace=$NAMESPACE --ignore-not-found=true
+
+                        echo "Running smoke test on $TEST_IMAGE..."
+                        kubectl run test-pod --image=$TEST_IMAGE --restart=Never --namespace=$NAMESPACE
+                        kubectl wait --for=condition=Ready pod/test-pod --timeout=60s --namespace=$NAMESPACE
+
+                        if kubectl exec -n $NAMESPACE test-pod -- curl -f http://localhost:8000; then
+                            echo "Smoke test PASSED"
+                        else
+                            echo "Smoke test FAILED"
+                            kubectl logs test-pod --namespace=$NAMESPACE || true
+                            exit 1
+                        fi
+
+                        echo "Removing the test Pod..."
+                        kubectl delete pod test-pod --namespace=$NAMESPACE
+                    '''
+                }
+            }
+        }
+
+        stage('Sign the Image') {
+            when { anyOf { branch 'main'; branch pattern: 'release/.*'; branch pattern: 'hotfix/.*' } }
             steps {
                 container('kaniko') {
                     sh '''
-                        echo "Building Docker image with Kaniko..."
-                        /kaniko/executor \
-                          --dockerfile=Dockerfile \
-                          --context=$WORKSPACE \
-                          --destination=$DOCKER_IMAGE \
-                          --docker-config=/kaniko/.docker \
-                          --digest-file=/home/jenkins/agent/image-digest.txt
+                        # Sign only for production/release branches
+                        IMAGE_DIGEST=$(cat /home/jenkins/agent/image-digest.txt | cut -d@ -f2)
+                        FULL_IMAGE="${DOCKER_REPO}:${IMAGE_TAG}"
+                        echo "Image digest: $IMAGE_DIGEST"
+                        echo "Signing image ${FULL_IMAGE} with Cosign..."
+                        cosign sign --key /kaniko/.cosign/cosign.key ${FULL_IMAGE}@${IMAGE_DIGEST}
 
-                        # Sign image only for main and release/*
-                        if [[ "$BRANCH_NAME" == "main" || "$BRANCH_NAME" =~ ^release/ ]]; then
-                            echo "Identifying Image Digest..."
-                            IMAGE_DIGEST=$(cat /home/jenkins/agent/image-digest.txt)
-                            echo "Image digest: $IMAGE_DIGEST"
-                            echo "Signing image with Cosign..."
-
-                            cosign sign --key /kaniko/.cosign/cosign.key $IMAGE_DIGEST
-                        else
-                            echo "Skipping image signing for branch $BRANCH_NAME"
-                        fi                        
                     '''
                 }
             }
@@ -230,7 +171,7 @@ Saturday	Close
                     message: "🚨 *HOTFIX PENDING:* Branch `${env.BRANCH_NAME}` is ready for verification.\nReview the build here: <${env.BUILD_URL}|View Jenkins Job> and click 'Proceed' to deploy to Staging."
                 )
                 
-                input message: "Deploy this hotfix to STAGING for verification?", ok: "Deploy to Staging"
+                input message: "Deploy this hotfix to STAGING for verification?", ok: "Deploy to Staging (hotfix env)"
             }
         }
 
@@ -248,6 +189,7 @@ Saturday	Close
                     script {
                         def envName = ""
                         def valuesFile = ""
+                        def gitBranch = ""
                         if (env.BRANCH_NAME == "develop") {
                             envName = "dev"
                             valuesFile = "values-dev.yaml"
@@ -256,9 +198,9 @@ Saturday	Close
                             envName = "staging"
                             valuesFile = "values-staging.yaml"
                             gitBranch = "main"    // release changes go to main branch in GitOps
-                        } else if (env.BRANCH_NAME.startsWith("hotfix")) {
+                        } else if (env.BRANCH_NAME.startsWith("hotfix/")) {
                             envName = "hotfix-staging"
-                            valuesFile = "values-staging.yaml"
+                            valuesFile = "values-hotfix.yaml"
                             gitBranch = "main"    // hotfix changes go to main branch in GitOps
                         } else if (env.BRANCH_NAME == "main") {
                             envName = "prod"
@@ -278,17 +220,17 @@ Saturday	Close
                         )]) {
                             sh """
                                 rm -rf ${GITOPS_DIR}
-                                git clone -b ${gitBranch} https://${GIT_USER}:${GIT_TOKEN}@github.com/Helen-Tam/gitops-weather-app.git ${GITOPS_DIR}
+                                git clone --depth 1 -b ${gitBranch} https://${GIT_USER}:${GIT_TOKEN}@github.com/Helen-Tam/gitops-weather-app.git ${GITOPS_DIR}
                                 cd ${GITOPS_DIR}/weather-app
 
                                 git config user.email "jenkins@ci.local"
                                 git config user.name "Jenkins CI"
 
                                 if [ "$envName" = "dev" ]; then
-                                    yq e '.image.tag = "${IMAGE_TAG}" | .image.digest = ""' -i ${valuesFile}
+                                    yq e ".image.tag = \"${IMAGE_TAG}\" | .image.digest = \"\"" -i ${valuesFile}
                                 else
-                                    DIGEST=\$(cat \$WORKSPACE/image-digest.txt | cut -d@ -f2)
-                                    yq e '.image.digest = "'$DIGEST'" | .image.tag = ""' -i ${valuesFile}
+                                    DIGEST=$(cat /home/jenkins/agent/image-digest.txt | cut -d@ -f2)
+                                    yq e ".image.digest = \\"\$DIGEST\\" | .image.tag = \\"\\"" -i ${valuesFile}
                                 fi
 
                                 git add ${valuesFile}
@@ -296,7 +238,7 @@ Saturday	Close
                                 if git diff --cached --quiet; then
                                     echo "No GitOps changes detected; skipping commit."
                                 else
-                                    git commit -m "Update ${envName} image to ${IMAGE_TAG}"
+                                    git commit -m "ci: update ${envName} image to ${IMAGE_TAG} (build ${BUILD_NUMBER})"
                                     git push origin ${gitBranch}
                                 fi
                             """
@@ -313,7 +255,7 @@ Saturday	Close
            container('git-ops') {
               sh """
                 echo "Cleaning up ephemeral test pod if it exists..."
-                kubectl delete pod test-pod --namespace=jenkins-agents || true
+                kubectl delete pod test-pod --namespace=$NAMESPACE || true
               """
            }
         }

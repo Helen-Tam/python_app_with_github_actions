@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: jenkins
+  labels:
+    app: jenkins-agent
+spec:
+  serviceAccountName: jenkins-agent
+  containers:
+  - name: jnlp
+    image: jenkins/inbound-agent
+    args: ['$(JENKINS_SECRET)', '$(JENKINS_NAME)']
+    volumeMounts:
+      - name: workspace-volume
+        mountPath: /home/jenkins/agent
+
+  - name: python-tools
+    image: python:3.11-slim
+    command: ["cat"]
+    tty: true
+    volumeMounts:
+      - name: workspace-volume
+        mountPath: /home/jenkins/agent
+
+  - name: kaniko
+    image: helentam93/jenkins-agents:kaniko-trivy-cosign    
+    command: ["cat"]
+    tty: true
+    volumeMounts:
+      - name: workspace-volume
+        mountPath: /home/jenkins/agent
+      - name: kaniko-secret
+        mountPath: /kaniko/.docker
+      - name: cosign-key
+        mountPath: /kaniko/.cosign
+
+  - name: git-ops
+    image: alpine/k8s:1.32.12 # Includes kubectl, yq, and git
+    command: ["cat"]
+    tty: true
+    volumeMounts:
+      - name: workspace-volume
+        mountPath: /home/jenkins/agent
+
+  volumes:
+  - name: workspace-volume
+    emptyDir: {}
+  - name: kaniko-secret
+    secret:
+      secretName: dockerhub-creds
+  - name: cosign-key
+    secret:
+      secretName: cosign-key
