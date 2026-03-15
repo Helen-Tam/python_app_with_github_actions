@@ -229,8 +229,9 @@ pipeline {
                                 if [ "$envName" = "dev" ]; then
                                     yq e ".image.tag = \"${IMAGE_TAG}\" | .image.digest = \"\"" -i ${valuesFile}
                                 else
-                                    DIGEST=$(cat /home/jenkins/agent/image-digest.txt | cut -d@ -f2)
-                                    yq e ".image.digest = \\"\$DIGEST\\" | .image.tag = \\"\\"" -i ${valuesFile}
+                                    # Read digest and inline it into yq (avoid escaping/Groovy interpolation issues)
+                                    DIGEST=$(cut -d@ -f2 /home/jenkins/agent/image-digest.txt)
+                                    yq e ".image.digest = \"${DIGEST}\" | .image.tag = \"\"" -i ${valuesFile}
                                 fi
 
                                 git add ${valuesFile}
