@@ -171,7 +171,7 @@ pipeline {
                     message: "🚨 *HOTFIX PENDING:* Branch `${env.BRANCH_NAME}` is ready for verification.\nReview the build here: <${env.BUILD_URL}|View Jenkins Job> and click 'Proceed' to deploy to Staging."
                 )
                 
-                input message: "Deploy this hotfix to STAGING for verification?", ok: "Deploy to Staging (hotfix env)"
+                input message: "Deploy this hotfix to STAGING for verification?", ok: "Deploy to Staging"
             }
         }
 
