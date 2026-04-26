@@ -49,7 +49,7 @@ jobs:
       with:
         extra_args: --results=verified,unknown
 
-  dependency-check:
+  dependency-scan:
     name: Dependency Check with Trivy 
     runs-on: ubuntu-latest
     needs: [secret-scan, lint]
