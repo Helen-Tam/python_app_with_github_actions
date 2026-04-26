@@ -7,14 +7,6 @@ on:
     branches: [ "main" ]
 
 jobs:
-  setup:
-    name: Setup Environment
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
   lint:
     name: Static Code Analysis
     runs-on: ubuntu-latest
@@ -41,3 +33,20 @@ jobs:
           echo "Pylint score: $SCORE"
 
           python -c "import sys; sys.exit(1 if float('$SCORE') < 7.0 else 0)"
+
+  secret-scan:
+    name: Secret Scanning with trufflehog
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install trufflehog
+        run: |
+          python -m pip install --upgrade pip
+          pip install trufflehog
+          
+      - name: Run trufflehog
+        run: |
+          trufflehog discover --repo_path . --json --max_depth 10 --fail
