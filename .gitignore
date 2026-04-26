@@ -5,6 +5,9 @@
 # Do not ignore .gitignore
 !.gitignore
 
+# Do not ignore .github/workflows
+!.github/workflows/**
+
 # Do not ignore image directory
 !images/**
 
