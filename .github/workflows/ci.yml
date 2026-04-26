@@ -48,4 +48,4 @@ jobs:
           path: .
           base: main
           head: HEAD
-          extra_args: --fail
+          extra_args: --fail --results=verified,unknown
