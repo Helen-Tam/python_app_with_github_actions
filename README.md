@@ -142,7 +142,6 @@ git push origin hotfix/critical-patch
         Send a message to Slack channel on success/failure of the pipeline.
 
 
-
 🌿 Step-by-step branching flow based on the logic in the pipeline:
 
 👉 1. The Feature Stage (feature/*)
