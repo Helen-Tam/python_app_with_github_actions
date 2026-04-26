@@ -47,3 +47,22 @@ jobs:
       uses: trufflesecurity/trufflehog@main
       with:
         extra_args: --results=verified,unknown
+
+  dependency-check:
+    name: Dependency Check with Trivy 
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Trivy
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y trivy
+
+    - name: Run Trivy Dependency Check
+      run: trivy fs --exit-code 1 --severity HIGH,CRITICAL .
+
+    - name: Dockerfile Scanning
+      run: trivy config --exit-code 1 --severity HIGH,CRITICAL Dockerfile
